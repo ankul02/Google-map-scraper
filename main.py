@@ -3,6 +3,9 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 import time
 
 class GoogleMapScraper:
@@ -21,6 +24,7 @@ class GoogleMapScraper:
         self.chrome_options.add_argument("--v=1")
         self.chrome_service = Service(executable_path=self.chrome_driver_path)
         self.driver = webdriver.Chrome(service=self.chrome_service, options=self.chrome_options)
+        self.wait = WebDriverWait(self.driver, 10)  # Set explicit wait
 
     def search(self, query):
         self.driver.get("https://www.google.com/maps/")
@@ -31,30 +35,50 @@ class GoogleMapScraper:
         search_button.click()
         time.sleep(5)  # Wait for the search results to load
 
-    def scroll_results(self):
+    def scroll_and_collect_urls(self):
+        urls = set()  # Use a set to store URLs and avoid duplicates
         flag = True
-        i = 0
+        attempt = 0  # To control scrolling attempts
+
         while flag:
+            # Scroll and collect URLs of listings
+            results = self.wait.until(EC.presence_of_all_elements_located((By.XPATH, '//*[@class="hfpxzc"]')))
+            
+            for result in results:
+                try:
+                    url = result.get_attribute('href')
+                    if url and url not in urls:  # Add only unique URLs
+                        urls.add(url)
+                        # print(f"Collected URL: {url}")
+                except Exception as e:
+                    print(f"Error accessing URL: {e}")
+                    continue
+
+            # Scroll down to load more results
             scrollable_div = self.driver.find_element(By.XPATH, '//*[@role="feed"]')
             self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
-            time.sleep(2)  # Wait for new results to load
-            if "You've reached the end of the list." in self.driver.page_source:
-                flag = False
-            i += 1
+            time.sleep(2)  # Allow time for new results to load
 
-    def scrape_data(self):
-        results = self.driver.find_elements(By.CLASS_NAME, 'hfpxzc')
+            # Limit the number of scrolling attempts to prevent infinite scrolling
+            attempt += 1
+            if attempt >= 10 or "You've reached the end of the list." in self.driver.page_source:
+                flag = False
+
+        print(f"Total unique URLs collected: {len(urls)}")
+        return list(urls)  # Convert the set to a list before returning
+
+    def scrape_data(self, urls):
         scraped_data = []
 
-        for index, result in enumerate(results):
+        for url in urls:
             try:
-                result.click()  # Click on the result
+                self.driver.get(url)  # Open each listing URL
                 time.sleep(5)  # Wait for details to load
 
                 # Extract Name
                 try:
-                    name = self.driver.find_element(By.XPATH, '//*[@class="DUwDvf lfPIob"]').text
-                except:
+                    name = self.wait.until(EC.presence_of_element_located((By.XPATH, '//*[@class="DUwDvf lfPIob"]'))).text
+                except TimeoutException:
                     name = "N/A"
 
                 # Extract Phone
@@ -86,12 +110,8 @@ class GoogleMapScraper:
                     'Address': address
                 })
 
-                # Go back to the results page
-                self.driver.execute_script("window.history.go(-1)")
-                time.sleep(5)  # Wait for the results page to load again
-
             except Exception as e:
-                print(f"Error clicking or scraping result {index + 1}: {str(e)}")
+                print(f"Error scraping URL {url}: {str(e)}")
         
         return scraped_data
 
@@ -110,12 +130,12 @@ chrome_driver_path = r"D:\\my_work\\python\\google_map_scraper\\chromedriver-win
 
 scraper = GoogleMapScraper(chrome_browser_path, chrome_driver_path)
 
-search_query = "restaurants in kashipur uttakahand"
+search_query = "restaurants in kashipur uttarakhand"
 scraper.search(search_query)
-scraper.scroll_results()
+urls = scraper.scroll_and_collect_urls()
 
 # Scrape the data and save it to a CSV
-data = scraper.scrape_data()
+data = scraper.scrape_data(urls)
 scraper.save_to_csv(data, 'scraped_google_maps_data.csv')
 
 # Close the driver
